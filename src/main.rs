@@ -176,8 +176,6 @@ fn query_meazure(config: &Config, from: &String, to: &String) -> EntryResult {
     ],
     "Ordering": null}}"#, from, to);
 
-    // println!("Login successful, sending query: {}", query_body);
-    
     let mut jar = hyper::header::CookieJar::new(b"key");
     let set_cookie = login_res.headers.get::<hyper::header::SetCookie>().unwrap();
     set_cookie.apply_to_cookie_jar(&mut jar);
@@ -243,7 +241,6 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
 
     let today_entry = entries.iter().find(|&e| {
         let date_time = Local.timestamp(e.date/1000, 0) - local_now.offset().local_minus_utc();
-        // println!("DBG: ts: {}, dt: {}, ln: {}, lt: {}", e.date, date_time, local_now, local_tomorrow);
         return date_time >= local_now && date_time <= local_tomorrow;
     });
 

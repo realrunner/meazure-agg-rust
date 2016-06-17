@@ -1,0 +1,11 @@
+[package]
+
+name = "surgehours"
+version = "0.0.1"
+authors = [ "Mike Nelson <mnelson@surgeforward.com>" ]
+
+[dependencies]
+hyper = "*"
+rustc-serialize = "*"
+clap = "2"
+chrono = "0.2"

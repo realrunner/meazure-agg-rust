@@ -52,9 +52,19 @@ fn main() {
 
     println!("{}: {} - {}", config.uname, from_date, to_date);
 
-    let entries = query_meazure(&config, &from_date, &to_date).unwrap();
+    let entries = query_meazure(&config, &from_date, &to_date).unwrap_or(vec!());
+    if entries.len() < 1 {
+        println!("No entires for that date range");
+        std::process::exit(0);
+    }
+
     let agg = aggregate_hours(&entries, &config);
-    let proj = make_projections(&entries, agg.get("total").unwrap(), &from_date, &to_date);
+    let proj;
+    {
+        let total = agg.get("total").unwrap(); 
+        proj = make_projections(&entries, total, &from_date, &to_date);  
+    } 
+    
     let results = Results {
         hours: agg,
         projections: proj

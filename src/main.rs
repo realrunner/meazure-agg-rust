@@ -4,7 +4,7 @@ extern crate clap;
 extern crate chrono;
 extern crate rpassword;
 
-use std::io::{self, Read, BufRead, Write};
+use std::io::{self, Read, Write};
 use std::collections::HashMap;
 use rustc_serialize::json;
 use std::fs;

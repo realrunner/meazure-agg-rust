@@ -76,7 +76,7 @@ fn main() {
 struct Config {
     uname: String,
     pword: String,
-    rates: HashMap<String, i64>,
+    rates: HashMap<String, f32>,
 }
 
 #[derive(RustcDecodable, RustcEncodable)]
@@ -232,7 +232,7 @@ fn aggregate_hours(entries: &Vec<Entry>, config: &Config) -> HashMap<String, Ear
             Some(r) => *r,
             None => match config.rates.get("_default") {
                 Some(r) => *r,
-                None => 0
+                None => 0.0
             }
         } as f32;
         merge_earnings(&mut agg, &entry, rate, proj);

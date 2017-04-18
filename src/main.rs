@@ -1,4 +1,5 @@
 extern crate hyper;
+extern crate hyper_native_tls;
 extern crate rustc_serialize;
 extern crate clap;
 extern crate chrono;
@@ -12,6 +13,7 @@ use std::result::Result;
 use clap::{App};
 use chrono::*;
 use rpassword::read_password;
+use hyper_native_tls::NativeTlsClient;
 
 const CONFIG_FILE_NAME: &'static str = "meazure.config.json";
 const DATE_FMT: &'static str = "%Y-%m-%d";
@@ -52,9 +54,16 @@ fn main() {
 
     println!("{}: {} - {}", config.uname, from_date, to_date);
 
-    let entries = query_meazure(&config, &from_date, &to_date).unwrap_or(vec!());
+    let entries;
+    match query_meazure(&config, &from_date, &to_date) {
+        Result::Ok(v) => entries = v,
+        Result::Err(e) => {
+            println!("Error querying measure: {:?}", e);
+            std::process::exit(0);
+        }
+    };
     if entries.len() < 1 {
-        println!("No entires for that date range");
+        println!("No entries for that date range");
         std::process::exit(0);
     }
 
@@ -147,14 +156,16 @@ fn last_day_of_month(year: i32, month: u32) -> u32 {
 type EntryResult = Result<Vec<Entry>, String>;
 
 fn query_meazure(config: &Config, from: &String, to: &String) -> EntryResult {
-    let client = hyper::Client::new();
+    let ssl = NativeTlsClient::new().unwrap();
+    let connector = hyper::net::HttpsConnector::new(ssl);
+    let client = hyper::Client::with_connector(connector);
     let login_body = format!("{{\"Email\": \"{}\", \"Password\": \"{}\"}}", config.uname, config.pword);
     let login_res;
     match client.post("https://meazure.surgeforward.com/Auth/Login")
             .body(login_body.as_str())
             .send() {
         Result::Ok(r) => login_res = r,
-        Result::Err(e) => return Err(e.to_string())
+        Result::Err(e) => return Err(format!("Login error: {}", e.to_string()))
     };
 
     if login_res.status != hyper::Ok {
@@ -186,10 +197,10 @@ fn query_meazure(config: &Config, from: &String, to: &String) -> EntryResult {
     ],
     "Ordering": null}}"#, from, to);
 
-    let mut jar = hyper::header::CookieJar::new(b"key");
     let set_cookie = login_res.headers.get::<hyper::header::SetCookie>().unwrap();
-    set_cookie.apply_to_cookie_jar(&mut jar);
-    let cookie = hyper::header::Cookie::from_cookie_jar(&jar);
+    let cookie_val = &set_cookie[0];
+    // print!("Set cookie: {}, Cookie value: {:?}", cookie_val, set_cookie);
+    let cookie = hyper::header::Cookie(vec![cookie_val.clone()]);
     let query_req = client.post("https://meazure.surgeforward.com/Dashboard/RunQuery")
             .body(query_body.as_str())
             .header(cookie);

@@ -6,6 +6,7 @@ authors = [ "Mike Nelson <mnelson@surgeforward.com>" ]
 
 [dependencies]
 hyper = "*"
+hyper-native-tls = "*"
 rustc-serialize = "*"
 clap = "2"
 chrono = "0.2.25"

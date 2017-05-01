@@ -11,7 +11,7 @@ use rustc_serialize::json;
 use std::fs;
 use std::result::Result;
 use clap::{App};
-use chrono::*;
+use chrono::prelude::*;
 use rpassword::read_password;
 use hyper_native_tls::NativeTlsClient;
 
@@ -261,8 +261,8 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
     let local_to = Local.ymd(to_date.year(), to_date.month(), to_date.day());
 
     let today_entry = entries.iter().find(|&e| {
-        let date_time = Local.timestamp(e.date/1000, 0) - local_now.offset().local_minus_utc();
-        return date_time >= local_now && date_time <= local_tomorrow;
+        let date_time = Local.timestamp(e.date/1000, 0).timestamp() - local_now.offset().local_minus_utc() as i64;
+        return date_time >= local_now.timestamp() && date_time <= local_tomorrow.timestamp();
     });
 
     let mut c = local_from.clone();

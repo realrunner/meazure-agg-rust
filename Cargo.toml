@@ -5,8 +5,15 @@ version = "0.0.1"
 authors = [ "Mike Nelson <mnelson@surgeforward.com>" ]
 
 [dependencies]
+cookie = "0.9"
+serde = "*"
+serde_derive = "*"
+serde_json = "*"
+futures = "*"
+tokio = "*"
+tokio-core = "*"
 hyper = "*"
-hyper-native-tls = "*"
+hyper-tls = "*"
 rustc-serialize = "*"
 clap = "2"
 chrono = "*"

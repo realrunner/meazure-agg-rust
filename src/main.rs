@@ -1,19 +1,28 @@
+#[macro_use]
+extern crate serde_derive;
+
 extern crate hyper;
-extern crate hyper_native_tls;
-extern crate rustc_serialize;
+extern crate hyper_tls;
+extern crate serde;
+extern crate serde_json;
 extern crate clap;
 extern crate chrono;
 extern crate rpassword;
+extern crate futures;
+extern crate tokio_core;
+extern crate cookie;
 
 use std::io::{self, Read, Write};
 use std::collections::HashMap;
-use rustc_serialize::json;
 use std::fs;
 use std::result::Result;
+use std::error::Error;
 use clap::{App};
 use chrono::prelude::*;
 use rpassword::read_password;
-use hyper_native_tls::NativeTlsClient;
+use futures::{Future, Stream};
+use tokio_core::reactor::Core;
+use std::str;
 
 const CONFIG_FILE_NAME: &'static str = "meazure.config.json";
 const DATE_FMT: &'static str = "%Y-%m-%d";
@@ -53,9 +62,11 @@ fn main() {
     }
 
     println!("{}: {} - {}", config.uname, from_date, to_date);
+    
+    let mut core = Core::new().unwrap();
 
     let entries;
-    match query_meazure(&config, &from_date, &to_date) {
+    match query_meazure(& mut core, &config, &from_date, &to_date) {
         Result::Ok(v) => entries = v,
         Result::Err(e) => {
             println!("Error querying measure: {:?}", e);
@@ -78,17 +89,17 @@ fn main() {
         hours: agg,
         projections: proj
     };
-    println!("{}", json::as_pretty_json(&results));
+    println!("{}", serde_json::to_string_pretty(&results).unwrap());
 }
 
-#[derive(RustcDecodable, RustcEncodable)]
+#[derive(Serialize, Deserialize)]
 struct Config {
     uname: String,
     pword: String,
     rates: HashMap<String, f32>,
 }
 
-#[derive(RustcDecodable, RustcEncodable)]
+#[derive(Serialize, Deserialize)]
 struct Projections {
     week_days: i64,
     week_days_past: i64,
@@ -99,16 +110,38 @@ struct Projections {
     estimated_hours: f32
 }
 
-#[derive(RustcDecodable, RustcEncodable)]
+#[derive(Serialize, Deserialize)]
 struct Earnings {
     hours: f32,
     earnings: f32
 }
 
-#[derive(RustcDecodable, RustcEncodable)]
+#[derive(Serialize, Deserialize)]
 struct Results {
     hours: HashMap<String, Earnings>,
     projections: Projections
+}
+
+#[derive(Serialize, Deserialize)]
+struct MeazureEntry {
+    #[serde(rename = "Date")]
+    date: i64,
+    #[serde(rename = "DurationSeconds")]
+    duration_seconds: i32,
+    #[serde(rename = "Id")]
+    id: i64,
+    #[serde(rename = "Notes")]
+    notes: String,
+    #[serde(rename = "ProjectId")]
+    project_id: i64,
+    #[serde(rename = "ProjectName")]
+    project_name: String,
+    #[serde(rename = "TaskId")]
+    task_id: i64,
+    #[serde(rename = "TaskName")]
+    task_name: String,
+    #[serde(rename = "UserName")]
+    user_name: String
 }
 
 struct Entry {
@@ -121,7 +154,7 @@ fn get_config(config_file_name: &str) -> io::Result<Config> {
     let mut f = try!(fs::File::open(config_file_name));
     let mut data = String::new();
     try!(f.read_to_string(&mut data));
-    let config: Config = json::decode(&data).unwrap();
+    let config: Config = serde_json::from_str(&data).unwrap();
     Result::Ok(config)
 }
 
@@ -143,7 +176,7 @@ fn create_config(config_file_name: &str) -> Config {
         rates: HashMap::new() 
     };
 
-    let encoded = json::encode(&config).unwrap();
+    let encoded = serde_json::to_string_pretty(&config).unwrap();
     let mut f = fs::File::create(config_file_name).unwrap();
     f.write(encoded.as_bytes()).unwrap();
     return config;
@@ -153,24 +186,18 @@ fn last_day_of_month(year: i32, month: u32) -> u32 {
     NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap_or(NaiveDate::from_ymd(year + 1, 1, 1)).pred().day()
 }
 
-type EntryResult = Result<Vec<Entry>, String>;
-
-fn query_meazure(config: &Config, from: &String, to: &String) -> EntryResult {
-    let ssl = NativeTlsClient::new().unwrap();
-    let connector = hyper::net::HttpsConnector::new(ssl);
-    let client = hyper::Client::with_connector(connector);
+fn query_meazure(core: & mut Core, config: &Config, from: &String, to: &String) -> Result<Vec<Entry>, Box<Error>> {
+    let handle = core.handle();
+    let client = hyper::Client::configure()
+        .connector(hyper_tls::HttpsConnector::new(4, &handle)?)
+        .build(&handle);
+    
     let login_body = format!("{{\"Email\": \"{}\", \"Password\": \"{}\"}}", config.uname, config.pword);
-    let login_res;
-    match client.post("https://meazure.surgeforward.com/Auth/Login")
-            .body(login_body.as_str())
-            .send() {
-        Result::Ok(r) => login_res = r,
-        Result::Err(e) => return Err(format!("Login error: {}", e.to_string()))
-    };
-
-    if login_res.status != hyper::Ok {
-        return Result::Err("Failed logging in to meazure".to_string());
-    }
+    let login_uri = "https://meazure.surgeforward.com/Auth/Login".parse()?;
+    let mut login_req = hyper::Request::new(hyper::Method::Post, login_uri);
+    login_req.headers_mut().set(hyper::header::ContentType::json());
+    login_req.headers_mut().set(hyper::header::ContentLength(login_body.len() as u64));
+    login_req.set_body(login_body);
 
     let query_body = format!(r#"{{
     "ContentType": 1,
@@ -196,34 +223,40 @@ fn query_meazure(config: &Config, from: &String, to: &String) -> EntryResult {
       }}
     ],
     "Ordering": null}}"#, from, to);
-
-    let set_cookie = login_res.headers.get::<hyper::header::SetCookie>().unwrap();
-    let cookie_val = &set_cookie[0];
-    // print!("Set cookie: {}, Cookie value: {:?}", cookie_val, set_cookie);
-    let cookie = hyper::header::Cookie(vec![cookie_val.clone()]);
-    let query_req = client.post("https://meazure.surgeforward.com/Dashboard/RunQuery")
-            .body(query_body.as_str())
-            .header(cookie);
-
-    let mut query_res;
-    match query_req.send() {
-        Result::Ok(r) => query_res = r,
-        Result::Err(e) => return Err(e.to_string())
-    };
-
-    let mut results = String::new();
-    query_res.read_to_string(&mut results).unwrap();
-
+    
+    let work = client.request(login_req).and_then(|login_res| {
+        let set_cookie = login_res.headers().get::<hyper::header::SetCookie>().unwrap();
+        let cookie_s = &set_cookie[0];
+        let cookie_parsed = cookie::Cookie::parse(cookie_s.to_string()).unwrap();
+        let mut cookie_header = hyper::header::Cookie::new();
+        cookie_header.set(cookie_parsed.name().to_string(), cookie_parsed.value().to_string());
+        
+        let uri = "https://meazure.surgeforward.com/Dashboard/RunQuery".parse().unwrap();
+        let mut req = hyper::Request::new(hyper::Method::Post, uri);
+        req.headers_mut().set(hyper::header::ContentType::json());
+        req.headers_mut().set(hyper::header::ContentLength(query_body.len() as u64));
+        req.headers_mut().set(cookie_header);
+        req.set_body(query_body);
+        client.request(req)
+    }).and_then(move |res| { res.body().concat2() })
+      .map(move |body| { 
+          let v: Vec<MeazureEntry> = serde_json::from_slice(&body).unwrap();
+          return v;
+    });
+    
+    let parsed = core.run(work)?;
+        
     let mut entries: Vec<Entry> = vec![];
-    let parsed = json::Json::from_str(results.as_str()).unwrap();
-
-    for e in parsed.as_array().unwrap().iter() {
-        let o = e.as_object().unwrap();
-        let project = o.get("ProjectName").unwrap().as_string().unwrap();
-        let seconds = o.get("DurationSeconds").unwrap().as_f64().unwrap();
-        let date = o.get("Date").unwrap().as_i64().unwrap();
-        entries.push(Entry {project: project.to_string(), hours: seconds as f64 / 60.0 / 60.0, date: date});
+    for se in parsed {
+        entries.push(
+            Entry {
+                project: se.project_name,
+                hours: se.duration_seconds as f64 / 60.0 / 60.0,
+                date: se.date
+            }
+        )
     }
+    
     return Ok(entries);
 }
 

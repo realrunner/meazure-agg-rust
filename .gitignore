@@ -8,3 +8,4 @@ meazure.config.json
 .suo
 *.rsproj*
 *.sln
+.idea

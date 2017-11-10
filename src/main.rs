@@ -11,6 +11,7 @@ extern crate rpassword;
 extern crate futures;
 extern crate tokio_core;
 extern crate cookie;
+extern crate regex;
 
 use std::io::{self, Read, Write};
 use std::collections::HashMap;
@@ -23,9 +24,13 @@ use rpassword::read_password;
 use futures::{Future, Stream};
 use tokio_core::reactor::Core;
 use std::str;
+use regex::Regex;
 
 const CONFIG_FILE_NAME: &'static str = "meazure.config.json";
 const DATE_FMT: &'static str = "%Y-%m-%d";
+
+type SslClient = hyper::Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector>>;
+type IoFuture<T> = Box<Future<Item=T, Error=hyper::Error>>;
 
 fn main() {
     let msg = format!("-f, --from=[FROM] 'From date e.g. 2016-01-01 Defaults to the begging of the month'
@@ -124,30 +129,38 @@ struct Results {
 
 #[derive(Serialize, Deserialize)]
 struct MeazureEntry {
-    #[serde(rename = "Date")]
-    date: i64,
-    #[serde(rename = "DurationSeconds")]
-    duration_seconds: i32,
-    #[serde(rename = "Id")]
-    id: i64,
-    #[serde(rename = "Notes")]
-    notes: String,
-    #[serde(rename = "ProjectId")]
-    project_id: i64,
-    #[serde(rename = "ProjectName")]
-    project_name: String,
-    #[serde(rename = "TaskId")]
-    task_id: i64,
-    #[serde(rename = "TaskName")]
-    task_name: String,
-    #[serde(rename = "UserName")]
-    user_name: String
+    #[serde(rename = "billToDate")]
+    bill_to_date: String,
+    #[serde(rename = "durationMinutes")]
+    duration_minutes: i32,
+    #[serde(rename = "categoryName")]
+    category_name: String,
+    id: String,
+    #[serde(rename = "isUnlocked")]
+    is_unlocked: bool,
+    description: String,
+    #[serde(rename = "projectId")]
+    project_id: String,
+    #[serde(rename = "projectName")]
+    project_name: String
+}
+
+#[derive(Serialize, Deserialize)]
+struct MeazureResponse {
+    data: Vec<MeazureEntry>,
+    #[serde(rename = "recordCount")]
+    record_count: i32
 }
 
 struct Entry {
     project: String,
     hours: f64,
-    date: i64
+    date: String
+}
+
+struct RequestTokens {
+    cookie: String,
+    field: String
 }
 
 fn get_config(config_file_name: &str) -> io::Result<Config> {
@@ -186,73 +199,98 @@ fn last_day_of_month(year: i32, month: u32) -> u32 {
     NaiveDate::from_ymd_opt(year, month + 1, 1).unwrap_or(NaiveDate::from_ymd(year + 1, 1, 1)).pred().day()
 }
 
+// Makes an initial request and returns the request verification tokens
+fn get_request_tokens(client: &SslClient) -> IoFuture<RequestTokens> {
+    let uri = "https://surge.meazure.com/Account/Login".parse().unwrap();
+    let response = client.get(uri)
+        .and_then(|res| {
+            let cookie_string: Option<String> = res.headers().get::<hyper::header::SetCookie>()
+                .and_then(|c| {c.get(0)})
+                .map(|c| {
+                    let parsed = cookie::Cookie::parse(c.to_string()).unwrap();
+                    return parsed.value().to_string();
+                });
+
+            let tokens = res.body().concat2()
+                .map(|chunk| {
+                    let s = str::from_utf8(&*chunk).unwrap();
+                    let re = Regex::new(r#"<input name="__RequestVerificationToken".*="(.*)".*/>"#).unwrap();
+                    let captures: Vec<regex::Captures> = re.captures_iter(s).collect();
+                    let field = captures
+                        .get(1)
+                        .and_then(|c| c.get(1))
+                        .map(|m| String::from(m.as_str()));// Second one
+                    RequestTokens {
+                        cookie: cookie_string.unwrap(),
+                        field: field.unwrap()
+                    }
+                });
+            tokens
+        });
+    return Box::new(response);
+}
+
+// Logs in and returns the cookies necessary to make API calls
+fn login(client: &SslClient, tokens: &RequestTokens, config: &Config) -> IoFuture<hyper::header::Cookie> {
+    let uri = "https://surge.meazure.com/account/login".parse().unwrap();
+    let mut req = hyper::Request::new(hyper::Method::Post, uri);
+
+    let mut cookie_header = hyper::header::Cookie::new();
+    cookie_header.set("__RequestVerificationToken", tokens.cookie.clone());
+
+    req.headers_mut().set(hyper::header::ContentType::form_url_encoded());
+    req.headers_mut().set(cookie_header);
+    req.set_body(format!("email={}&password={}&__RequestVerificationToken={}", config.uname, config.pword, tokens.field));
+
+    let response = client.request(req)
+        .map(|res| {
+            let cookies: Option<hyper::header::Cookie> = res.headers().get::<hyper::header::SetCookie>()
+                .map(|c| {c.iter().filter(|s| {s.contains("AspNet.Cookies")}).collect()})
+                .map(|c: Vec<&String>| {
+                    let mut cookie_header = hyper::header::Cookie::new();
+                    for cookie_str in c {
+                        let parsed = cookie::Cookie::parse(cookie_str.clone()).unwrap();
+                        cookie_header.append(parsed.name().to_string(), parsed.value().to_string());
+                    }
+                    cookie_header
+                });
+            return cookies.unwrap();
+        });
+    return Box::new(response);
+}
+
+fn run_query(client: &SslClient, cookies: hyper::header::Cookie, from: &String, to: &String) -> IoFuture<MeazureResponse> {
+    let uri = format!("https://surge.meazure.com/api/time-entry/?endDate={}&start=0&startDate={}", to, from).parse().unwrap();
+    let mut req = hyper::Request::new(hyper::Method::Get, uri);
+    req.headers_mut().set(cookies);
+    let response = client.request(req)
+        .and_then(move |res| { res.body().concat2() })
+        .map(|chunk| {
+            let r: MeazureResponse = serde_json::from_slice(&chunk).unwrap();
+            return r;
+        });
+    return Box::new(response);
+}
+
 fn query_meazure(core: & mut Core, config: &Config, from: &String, to: &String) -> Result<Vec<Entry>, Box<Error>> {
     let handle = core.handle();
     let client = hyper::Client::configure()
         .connector(hyper_tls::HttpsConnector::new(4, &handle)?)
         .build(&handle);
     
-    let login_body = format!("{{\"Email\": \"{}\", \"Password\": \"{}\"}}", config.uname, config.pword);
-    let login_uri = "https://meazure.surgeforward.com/Auth/Login".parse()?;
-    let mut login_req = hyper::Request::new(hyper::Method::Post, login_uri);
-    login_req.headers_mut().set(hyper::header::ContentType::json());
-    login_req.headers_mut().set(hyper::header::ContentLength(login_body.len() as u64));
-    login_req.set_body(login_body);
+    let tokens = get_request_tokens(&client);
+    let cookies = tokens.and_then(|tokens| login(&client, &tokens, &config));
+    let response = cookies.and_then(|cookies| run_query(&client, cookies, &from, &to));
 
-    let query_body = format!(r#"{{
-    "ContentType": 1,
-    "ReturnFields": [
-      "Date",
-      "DurationSeconds",
-      "ProjectName",
-      "TaskName"
-    ],
-    "ReturnFieldWidths": null,
-    "Criteria": [
-      {{
-        "JoinOperator": "",
-        "Field": "Date",
-        "Operator": ">=",
-        "Value": "{}"
-      }},
-      {{
-        "JoinOperator": "and",
-        "Field": "Date",
-        "Operator": "<=",
-        "Value": "{}"
-      }}
-    ],
-    "Ordering": null}}"#, from, to);
-    
-    let work = client.request(login_req).and_then(|login_res| {
-        let set_cookie = login_res.headers().get::<hyper::header::SetCookie>().unwrap();
-        let cookie_s = &set_cookie[0];
-        let cookie_parsed = cookie::Cookie::parse(cookie_s.to_string()).unwrap();
-        let mut cookie_header = hyper::header::Cookie::new();
-        cookie_header.set(cookie_parsed.name().to_string(), cookie_parsed.value().to_string());
-        
-        let uri = "https://meazure.surgeforward.com/Dashboard/RunQuery".parse().unwrap();
-        let mut req = hyper::Request::new(hyper::Method::Post, uri);
-        req.headers_mut().set(hyper::header::ContentType::json());
-        req.headers_mut().set(hyper::header::ContentLength(query_body.len() as u64));
-        req.headers_mut().set(cookie_header);
-        req.set_body(query_body);
-        client.request(req)
-    }).and_then(move |res| { res.body().concat2() })
-      .map(move |body| { 
-          let v: Vec<MeazureEntry> = serde_json::from_slice(&body).unwrap();
-          return v;
-    });
-    
-    let parsed = core.run(work)?;
+    let parsed: MeazureResponse = core.run(response)?;
         
     let mut entries: Vec<Entry> = vec![];
-    for se in parsed {
+    for se in parsed.data {
         entries.push(
             Entry {
                 project: se.project_name,
-                hours: se.duration_seconds as f64 / 60.0 / 60.0,
-                date: se.date
+                hours: se.duration_minutes as f64 / 60.0,
+                date: se.bill_to_date
             }
         )
     }
@@ -294,8 +332,9 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
     let local_to = Local.ymd(to_date.year(), to_date.month(), to_date.day());
 
     let today_entry = entries.iter().find(|&e| {
-        let date_time = Local.timestamp(e.date/1000, 0).timestamp() - local_now.offset().local_minus_utc() as i64;
-        return date_time >= local_now.timestamp() && date_time <= local_tomorrow.timestamp();
+        let entry_date = NaiveDate::parse_from_str(e.date.as_str(), DATE_FMT).unwrap(); //Local.timestamp(e.date/1000, 0).timestamp() - local_now.offset().local_minus_utc() as i64;
+        let entry_timestamp = entry_date.and_hms(0, 0, 0).timestamp();
+        return entry_timestamp >= local_now.timestamp() && entry_timestamp <= local_tomorrow.timestamp();
     });
 
     let mut c = local_from.clone();
@@ -322,18 +361,18 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
     }
 
     let ratio_complete:f32 = week_days_past as f32/ week_days as f32;
-    let percent_complete = (ratio_complete as f32 * 100 as f32).floor() as i64;
+    let percent_complete = (ratio_complete as f32 * 100.0).floor() as i64;
     let earnings_per_day = totals.earnings as f32 / week_days_past as f32;
     let estimated_earnings = earnings_per_day * week_days as f32;
     let estimated_hours = week_days as f32 * (totals.hours as f32 / week_days_past as f32);
 
     return Projections {
-        week_days: week_days,
-        week_days_past: week_days_past,
-        percent_complete: percent_complete, 
+        week_days,
+        week_days_past,
+        percent_complete,
         avg_earnings_per_day: earnings_per_day,
         avg_hours_per_day: totals.hours as f32 / week_days_past as f32,
-        estimated_earnings: estimated_earnings,
-        estimated_hours: estimated_hours
+        estimated_earnings,
+        estimated_hours
     };
 }

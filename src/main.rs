@@ -164,9 +164,9 @@ struct RequestTokens {
 }
 
 fn get_config(config_file_name: &str) -> io::Result<Config> {
-    let mut f = try!(fs::File::open(config_file_name));
+    let mut f = fs::File::open(config_file_name)?;
     let mut data = String::new();
-    try!(f.read_to_string(&mut data));
+    f.read_to_string(&mut data)?;
     let config: Config = serde_json::from_str(&data).unwrap();
     Result::Ok(config)
 }

@@ -66,7 +66,7 @@ fn main() {
         Result::Err(_) => config = create_config(config_file_name),
     }
 
-    println!("{}: {} - {}", config.uname, from_date, to_date);
+    println!("{}: -f {} -t{}", config.uname, from_date, to_date);
     
     let mut core = Core::new().unwrap();
 
@@ -332,8 +332,10 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
     let local_to = Local.ymd(to_date.year(), to_date.month(), to_date.day());
 
     let today_entry = entries.iter().find(|&e| {
-        let entry_date = NaiveDate::parse_from_str(e.date.as_str(), DATE_FMT).unwrap(); //Local.timestamp(e.date/1000, 0).timestamp() - local_now.offset().local_minus_utc() as i64;
-        let entry_timestamp = entry_date.and_hms(0, 0, 0).timestamp();
+        let entry_date = Local.from_utc_date(
+            &NaiveDate::parse_from_str(e.date.as_str(), DATE_FMT).unwrap()
+        ).and_hms(0 ,0 ,0);
+        let entry_timestamp = entry_date.timestamp();
         return entry_timestamp >= local_now.timestamp() && entry_timestamp <= local_tomorrow.timestamp();
     });
 
@@ -342,7 +344,7 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
     let mut week_days_past = 0;
     let local_today;
     if today_entry.is_some() {
-        local_today = Local::today().succ();
+        local_today = Local::today().pred();
     } else {
         local_today = Local::today();
     };

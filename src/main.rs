@@ -66,7 +66,7 @@ fn main() {
         Result::Err(_) => config = create_config(config_file_name),
     }
 
-    println!("{}: -f {} -t{}", config.uname, from_date, to_date);
+    println!("{}: -f {} -t {}", config.uname, from_date, to_date);
     
     let mut core = Core::new().unwrap();
 

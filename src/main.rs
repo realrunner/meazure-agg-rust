@@ -344,7 +344,7 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
     let mut week_days_past = 0;
     let local_today;
     if today_entry.is_some() {
-        local_today = Local::today().pred();
+        local_today = Local::today().succ();
     } else {
         local_today = Local::today();
     };

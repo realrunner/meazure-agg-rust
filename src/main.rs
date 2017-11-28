@@ -260,7 +260,7 @@ fn login(client: &SslClient, tokens: &RequestTokens, config: &Config) -> IoFutur
 }
 
 fn run_query(client: &SslClient, cookies: hyper::header::Cookie, from: &String, to: &String) -> IoFuture<MeazureResponse> {
-    let uri = format!("https://surge.meazure.com/api/time-entry/?endDate={}&start=0&startDate={}", to, from).parse().unwrap();
+    let uri = format!("https://surge.meazure.com/api/time-entry/?endDate={}&start=0&startDate={}&count=500", to, from).parse().unwrap();
     let mut req = hyper::Request::new(hyper::Method::Get, uri);
     req.headers_mut().set(cookies);
     let response = client.request(req)

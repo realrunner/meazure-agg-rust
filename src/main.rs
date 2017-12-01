@@ -13,7 +13,7 @@ extern crate tokio_core;
 extern crate cookie;
 extern crate regex;
 
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Write, ErrorKind};
 use std::collections::HashMap;
 use std::fs;
 use std::result::Result;
@@ -21,7 +21,7 @@ use std::error::Error;
 use clap::{App};
 use chrono::prelude::*;
 use rpassword::read_password;
-use futures::{Future, Stream};
+use futures::{Future, Stream, future};
 use tokio_core::reactor::Core;
 use std::str;
 use regex::Regex;
@@ -30,7 +30,7 @@ const CONFIG_FILE_NAME: &'static str = "meazure.config.json";
 const DATE_FMT: &'static str = "%Y-%m-%d";
 
 type SslClient = hyper::Client<hyper_tls::HttpsConnector<hyper::client::HttpConnector>>;
-type IoFuture<T> = Box<Future<Item=T, Error=hyper::Error>>;
+type IoFuture<T> = Box<Future<Item=T, Error=io::Error>>;
 
 fn main() {
     let msg = format!("-f, --from=[FROM] 'From date e.g. 2016-01-01 Defaults to the begging of the month'
@@ -74,7 +74,7 @@ fn main() {
     match query_meazure(& mut core, &config, &from_date, &to_date) {
         Result::Ok(v) => entries = v,
         Result::Err(e) => {
-            println!("Error querying measure: {:?}", e);
+            println!("Error querying measure: {}", e);
             std::process::exit(0);
         }
     };
@@ -226,7 +226,8 @@ fn get_request_tokens(client: &SslClient) -> IoFuture<RequestTokens> {
                     }
                 });
             tokens
-        });
+        })
+        .map_err(|hyper_error| { io::Error::new(ErrorKind::Other, format!("Failed getting tokens! {}", hyper_error)) });
     return Box::new(response);
 }
 
@@ -254,7 +255,14 @@ fn login(client: &SslClient, tokens: &RequestTokens, config: &Config) -> IoFutur
                     }
                     cookie_header
                 });
-            return cookies.unwrap();
+            return cookies;
+        })
+        .map_err(|hyper_error| { io::Error::new(ErrorKind::Other, format!("Login Request Failed! {}", hyper_error)) })
+        .and_then(|cookies_opt| {
+            match cookies_opt {
+                Some(cookies) => future::ok(cookies),
+                None => future::err(io::Error::new(ErrorKind::Other, "Login Failed!"))
+            }
         });
     return Box::new(response);
 }
@@ -268,7 +276,8 @@ fn run_query(client: &SslClient, cookies: hyper::header::Cookie, from: &String, 
         .map(|chunk| {
             let r: MeazureResponse = serde_json::from_slice(&chunk).unwrap();
             return r;
-        });
+        })
+        .map_err(|hyper_error| { io::Error::new(ErrorKind::Other, format!("Meazure query failed! {}", hyper_error)) });
     return Box::new(response);
 }
 

@@ -9,3 +9,4 @@ meazure.config.json
 *.rsproj*
 *.sln
 .idea
+.vscode

@@ -348,9 +348,15 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
         return entry_timestamp >= local_now.timestamp() && entry_timestamp <= local_tomorrow.timestamp();
     });
 
+    let mut dates_with_hours: HashMap<String, bool> = HashMap::new();
+    for entry in entries.iter() {
+        dates_with_hours.insert(entry.date.clone(), true);
+    }
+
     let mut c = local_from.clone();
     let mut week_days = 0;
     let mut week_days_past = 0;
+    let mut week_days_worked = 0;
     let local_today;
     if today_entry.is_some() {
         local_today = Local::today().succ();
@@ -363,6 +369,9 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
         let n = day.number_from_monday();
         if n < 6 {
             week_days += 1;
+            if dates_with_hours.contains_key(&c.format(DATE_FMT).to_string()) {
+                week_days_worked += 1;
+            }
             
             if c < local_today {
                 week_days_past += 1;
@@ -373,16 +382,16 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
 
     let ratio_complete:f32 = week_days_past as f32/ week_days as f32;
     let percent_complete = (ratio_complete as f32 * 100.0).floor() as i64;
-    let earnings_per_day = totals.earnings as f32 / week_days_past as f32;
+    let earnings_per_day = totals.earnings as f32 / week_days_worked as f32;
     let estimated_earnings = earnings_per_day * week_days as f32;
-    let estimated_hours = week_days as f32 * (totals.hours as f32 / week_days_past as f32);
+    let estimated_hours = week_days as f32 * (totals.hours as f32 / week_days_worked as f32);
 
     return Projections {
         week_days,
         week_days_past,
         percent_complete,
         avg_earnings_per_day: earnings_per_day,
-        avg_hours_per_day: totals.hours as f32 / week_days_past as f32,
+        avg_hours_per_day: totals.hours as f32 / week_days_worked as f32,
         estimated_earnings,
         estimated_hours
     };

@@ -108,6 +108,7 @@ struct Config {
 struct Projections {
     week_days: i64,
     week_days_past: i64,
+    week_days_left: i64,
     percent_complete: i64, 
     avg_earnings_per_day: f32,
     avg_hours_per_day: f32,
@@ -381,14 +382,16 @@ fn make_projections(entries: &Vec<Entry>, totals: &Earnings, from: &String, to: 
     }
 
     let ratio_complete:f32 = week_days_past as f32/ week_days as f32;
+    let week_days_left = week_days - week_days_past;
     let percent_complete = (ratio_complete as f32 * 100.0).floor() as i64;
     let earnings_per_day = totals.earnings as f32 / week_days_worked as f32;
-    let estimated_earnings = earnings_per_day * week_days as f32;
+    let estimated_earnings = (totals.earnings) + (earnings_per_day * week_days_left as f32);
     let estimated_hours = week_days as f32 * (totals.hours as f32 / week_days_worked as f32);
 
     return Projections {
         week_days,
         week_days_past,
+        week_days_left,
         percent_complete,
         avg_earnings_per_day: earnings_per_day,
         avg_hours_per_day: totals.hours as f32 / week_days_worked as f32,
